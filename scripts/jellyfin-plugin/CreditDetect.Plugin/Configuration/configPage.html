@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Credit Detect Plugin Configuration</title>
+</head>
+<body>
+    <h2>Credit Detect</h2>
+    <p>
+        Bridges <code>credit-detect</code> (Python) into Jellyfin's native media segment system.
+        Configured items are analysed on a daily schedule; resulting credit segments appear
+        with a "Skip Credits" button during playback.
+    </p>
+
+    <h3>Prerequisites</h3>
+    <ol>
+        <li>Python 3.10+ installed on the Jellyfin server</li>
+        <li><code>credit_detect.py</code> available on the filesystem</li>
+        <li>A trained model file (<code>model_v1.pb</code>)</li>
+        <li><code>opencv-python</code> and <code>ffmpeg</code> installed</li>
+    </ol>
+
+    <h3>Configuration</h3>
+    <label for="PythonPath">Python path</label>
+    <input id="PythonPath" name="PythonPath" type="text" class="input" />
+    <div class="fieldDescription">Path to the Python interpreter (default: <code>python3</code>)</div>
+
+    <label for="ScriptPath">Script path</label>
+    <input id="ScriptPath" name="ScriptPath" type="text" class="input" />
+    <div class="fieldDescription">
+        Path to <code>credit_detect.py</code>. Leave empty to auto-detect
+        (looks relative to plugin assembly).
+    </div>
+
+    <label for="ModelPath">Model path</label>
+    <input id="ModelPath" name="ModelPath" type="text" class="input" />
+    <div class="fieldDescription">
+        Absolute path to <code>model_v1.pb</code>. <strong>Required.</strong>
+    </div>
+
+    <label for="MinConfidence">Min confidence</label>
+    <input id="MinConfidence" name="MinConfidence" type="number" step="0.01" min="0" max="1" class="input" />
+    <div class="fieldDescription">
+        Minimum confidence score (0-1) to expose a credit marker to the skip-button UI.
+        Default: <code>0.3</code>.
+    </div>
+
+    <label for="BatchSize">Batch size</label>
+    <input id="BatchSize" name="BatchSize" type="number" min="1" max="100" class="input" />
+    <div class="fieldDescription">
+        Number of items to analyse per scheduled task run. Default: <code>10</code>.
+    </div>
+
+    <label for="ReanalyzeAfterDays">Re-analyse after (days)</label>
+    <input id="ReanalyzeAfterDays" name="ReanalyzeAfterDays" type="number" min="0" class="input" />
+    <div class="fieldDescription">
+        Days after which an already-analysed item is re-analysed. <code>0</code> = never.
+        Default: <code>30</code>.
+    </div>
+
+    <h3>Manual trigger</h3>
+    <p>
+        After saving configuration, run the <strong>Credit Detection</strong> scheduled task
+        from <em>Dashboard → Scheduled Tasks</em> to start processing.
+    </p>
+</body>
+</html>

@@ -20,3 +20,10 @@ Thumbs.db
 # Runtime
 *.log
 results/
+
+# C# / .NET build artifacts
+bin/
+obj/
+*.user
+*.suo
+*.DotSettings
