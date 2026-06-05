@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credit-detect"
+version = "0.1.0"
+description = "Detect credit sequences in video files by frame-feature analysis"
+readme = "README.md"
+license = {text = "AGPL-3.0-or-later"}
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+credit-detect = "credit_detect:main"
+
+[tool.setuptools]
+py-modules = ["credit_detect"]
