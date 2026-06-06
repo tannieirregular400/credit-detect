@@ -7,14 +7,79 @@ name = "credit-detect"
 version = "0.1.0"
 description = "Detect credit sequences in video files by frame-feature analysis"
 readme = "README.md"
-license = {text = "AGPL-3.0-or-later"}
+license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.10"
+keywords = ["video", "credits", "plex", "jellyfin", "detection"]
+authors = [
+    { name = "credit-detect authors" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.0",
 ]
 
+[project.optional-dependencies]
+# Required only for --video mode (direct DNN inference on ffmpeg-extracted frames)
+video = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+]
+# Required to run the test suite
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/credit-detect"
+Issues = "https://github.com/your-org/credit-detect/issues"
+Source = "https://github.com/your-org/credit-detect"
+
 [project.scripts]
 credit-detect = "credit_detect:main"
 
-[tool.setuptools]
-py-modules = ["credit_detect"]
+[tool.setuptools.packages.find]
+include = ["credit_detect*"]
+namespaces = false
+
+# Ship the PEP 561 marker so downstream type-checkers pick up the annotations.
+[tool.setuptools.package-data]
+"credit_detect" = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--showlocals",
+]
+filterwarnings = [
+    "error",
+    # Pydantic's serializer triggers a DeprecationWarning on Python 3.13+
+    # that we can't fix until upstream does. Allow it so tests don't break.
+    "ignore::DeprecationWarning:pydantic",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["credit_detect"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 70
