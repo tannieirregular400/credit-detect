@@ -11,44 +11,58 @@ detection that Plex uses to find credit sequences in video files.
 SPDX-License-Identifier: AGPL-3.0-or-later
 
 Usage:
-  # Analyze from pre-extracted CSV (9-column format):
-  python plex_credit_detect.py --csv thumbnail_data.csv --output result.json
+  # Analyze from pre-extracted CSV (9-column format, no ffmpeg/model):
+  python credit_detect.py --csv thumbnail_data.csv --output result.json
 
-  # Analyze from video directly (requires opencv-python + model_v1.pb):
-  #   ffmpeg is auto-resolved: PATH → Plex bundled → auto-downloaded
-  python plex_credit_detect.py --video input.mp4 --model model_v1.pb --output result.json
+  # Analyze from video directly (requires opencv-python + model_v1.pb
+  # + ffmpeg on PATH, or pass --ffmpeg-path):
+  python credit_detect.py --video input.mp4 --model model_v1.pb --output result.json
 """
-
-from __future__ import annotations
 
 import argparse
 import csv
 import json
+import logging
 import math
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
-import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
+from typing import ClassVar, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-if TYPE_CHECKING:
-    import numpy as np
+__all__ = [
+    "FrameFeatures",
+    "CreditSegment",
+    "CreditDetector",
+    "FrameInfo",
+    "extract_frames_ffmpeg",
+    "process_thumbs_with_dnn",
+    "read_csv",
+    "write_json",
+    "resolve_ffmpeg",
+    "main",
+]
+
+logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# TypedDict for intermediate ffmpeg frame info
-# ---------------------------------------------------------------------------
+class FrameInfo(NamedTuple):
+    """One extracted thumbnail frame, as emitted by :func:`extract_frames_ffmpeg`.
 
-class _FrameInfoDict(TypedDict):
-    """Shape of dicts yielded by ``extract_frames_ffmpeg``."""
-    index: int
+    Using a ``NamedTuple`` rather than a ``TypedDict`` gives attribute access
+    (``frame.filename``) instead of string-keyed lookups, so type checkers
+    can validate the call sites.
+
+    The ``index`` field intentionally shadows ``tuple.index()`` — same
+    pattern as ``enumerate`` and ``dbm``. We never call the method.
+    """
+
+    index: int  # type: ignore[override]
     pts: int
     pts_time_ms: int
     filename: str
@@ -88,13 +102,22 @@ FFMPEG_FPS: float = 0.5  # thumbnails per second
 THUMB_SIZE: int = 320  # 320x320 thumbnails
 
 # ---------------------------------------------------------------------------
-# ffmpeg resolution — PATH → Plex bundled → auto-download
+# ffmpeg resolution — explicit → $PATH → Plex bundled
 # ---------------------------------------------------------------------------
-
-FFMPEG_STATIC_URL: str = (
-    "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
-)
-"""URL for a static ffmpeg build (Linux x86-64, GPL)."""
+#
+# We do NOT auto-download ffmpeg. Reasons:
+#   1. Security: a hardcoded third-party URL with no checksum verification
+#      is a supply-chain risk.
+#   2. Portability: tarfile.extract (no filter) is unsafe and deprecated
+#      since Python 3.12. We won't ship code that depends on it.
+#   3. ffmpeg is already a hard dependency of every media server this
+#      tool runs alongside (Jellyfin, Plex, Emby, etc.). Re-downloading
+#      a second copy is redundant.
+#   4. The auto-download branch only knew about Linux x86-64 — silent
+#      failure on macOS, ARM, Windows.
+#
+# If ffmpeg is missing the user gets a clear actionable error and can
+# install it from their distro / package manager.
 
 _PLEX_FFMPEG_CANDIDATES: list[str] = [
     "/usr/lib/plexmediaserver/Plex Transcoder",
@@ -109,62 +132,61 @@ def resolve_ffmpeg(ffmpeg_path: str | None = None) -> str:
       1. Explicit ``ffmpeg_path`` argument (if it exists on disk).
       2. ``ffmpeg`` on ``$PATH`` (via ``shutil.which``).
       3. Plex Media Server's bundled ``Plex Transcoder``.
-      4. Download a static build to ``~/.cache/plex_credit_detect/ffmpeg``.
 
-    Raises ``SystemExit(1)`` when all sources are exhausted.
+    Raises ``SystemExit(1)`` with an actionable message when all sources
+    are exhausted.
     """
     # 1 — explicit path
     if ffmpeg_path and os.path.exists(ffmpeg_path):
         return ffmpeg_path
 
-    # 2 — PATH
+    # 2 — $PATH
     which = shutil.which("ffmpeg")
     if which:
         return which
 
-    # 3 — Plex bundled
+    # 3 — Plex bundled (only meaningful for users who also run Plex)
     for candidate in _PLEX_FFMPEG_CANDIDATES:
         if os.path.exists(candidate):
             return candidate
 
-    # 4 — auto-download static build (Linux x86-64 only)
-    cache_dir = Path.home() / ".cache" / "plex_credit_detect" / "ffmpeg"
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    logger.error(
+        "ffmpeg not found. Install it via your system package manager "
+        "(apt: ffmpeg, dnf: ffmpeg, brew: ffmpeg, winget: ffmpeg) "
+        "or pass --ffmpeg-path."
+    )
+    logger.error(
+        "Alternatively, use --csv mode with pre-extracted "
+        "thumbnail_data.csv (no ffmpeg required)."
+    )
+    sys.exit(1)
 
-    ffmpeg_bin = cache_dir / "ffmpeg"
-    if ffmpeg_bin.is_file():
-        return str(ffmpeg_bin)
 
-    print("[ffmpeg] not found on PATH or in Plex install — downloading static build",
-          file=sys.stderr)
-    print(f"[ffmpeg] source: {FFMPEG_STATIC_URL}", file=sys.stderr)
+def _sanitise_video_path(video_path: str) -> str:
+    """Validate and resolve ``video_path`` before handing it to ffmpeg.
 
-    archive_path = cache_dir / "ffmpeg.tar.xz"
-    try:
-        _ = urllib.request.urlretrieve(FFMPEG_STATIC_URL, archive_path)
-    except Exception as exc:
-        print(f"[ffmpeg] download failed: {exc}", file=sys.stderr)
-        print("[ffmpeg] install ffmpeg manually or use --csv mode", file=sys.stderr)
-        sys.exit(1)
+    Defends against:
+      * Null bytes — ``subprocess`` silently truncates at ``\\0`` on POSIX,
+        so an attacker-controlled path like ``good.mp4\\0;rm -rf ~`` would
+        pass through to a shell-free subprocess but with truncated args.
+      * Non-existent files — ffmpeg would otherwise create an empty output
+        and we'd produce zero thumbnails (silent failure).
+      * Symlink traversal — ``os.path.realpath`` collapses ``..`` and
+        symlinks so a relative path can't escape the caller's CWD.
 
-    try:
-        with tarfile.open(archive_path) as tf:
-            for member in tf.getmembers():
-                if member.name.endswith("/ffmpeg") and member.isfile():
-                    _ = tf.extract(member, cache_dir)
-                    extracted = cache_dir / member.name
-                    _ = extracted.rename(ffmpeg_bin)
-                    break
-        _ = archive_path.unlink()
-        ffmpeg_bin.chmod(0o755)
-    except Exception as exc:
-        print(f"[ffmpeg] extraction failed: {exc}", file=sys.stderr)
-        if archive_path.exists():
-            archive_path.unlink()
-        sys.exit(1)
+    Returns the absolute, real path. Raises ``ValueError`` on bad input.
+    """
+    if not video_path:
+        raise ValueError("video path is empty")
+    if "\x00" in video_path:
+        raise ValueError("video path contains a null byte")
+    if not os.path.isfile(video_path):
+        raise ValueError(f"video path is not a regular file: {video_path!r}")
 
-    print(f"[ffmpeg] cached at {ffmpeg_bin}", file=sys.stderr)
-    return str(ffmpeg_bin)
+    real = os.path.realpath(video_path)
+    if not os.path.isfile(real):
+        raise ValueError(f"realpath of {video_path!r} is not a file: {real!r}")
+    return real
 
 
 # ---------------------------------------------------------------------------
@@ -201,23 +223,6 @@ class FrameFeatures(BaseModel):
     text_y_center: float = Field(
         ge=0.0, le=1.0, description="Average detection Y / 80.0 — offset 88"
     )
-
-    # --- validators ---
-
-    @field_validator("entropy")
-    @classmethod
-    def _clamp_entropy(cls, v: float) -> float:
-        return max(0.0, v)
-
-    @field_validator("histogram_peak_ratio")
-    @classmethod
-    def _clamp_peak(cls, v: float) -> float:
-        return max(0.0, min(1.0, v))
-
-    @field_validator("text_x_center", "text_y_center")
-    @classmethod
-    def _clamp_center(cls, v: float) -> float:
-        return max(0.0, min(1.0, v))
 
     # --- computed fields ---
 
@@ -296,31 +301,6 @@ class CreditSegment(BaseModel):
 # Feature extraction helpers
 # ---------------------------------------------------------------------------
 
-def compute_entropy_peak(image_array: np.ndarray) -> tuple[float, float]:
-    """Compute per-image entropy and histogram-peak-ratio.
-
-    Equivalent to the OpenCV histogram analysis in sub_292050.
-    """
-    import numpy as np
-
-    if image_array.ndim == 3:
-        gray = cast(np.ndarray, np.mean(image_array, axis=2)).astype(np.uint8)  # type: ignore
-    else:
-        gray = cast(np.ndarray, image_array.astype(np.uint8))
-
-    hist = np.histogram(gray, bins=256, range=(0, 256))[0].astype(np.float64)
-    total_pixels = gray.size
-    hist_norm = hist / total_pixels
-
-    # Entropy = -sum(p * log2(p))
-    nonzero = hist_norm[hist_norm > 0]
-    entropy = float(-np.sum(nonzero * np.log2(nonzero)))
-
-    # histogramPeakRatio = max_bin_count / total
-    peak_ratio = float(np.max(hist)) / total_pixels
-
-    return entropy, peak_ratio
-
 
 def extract_frames_ffmpeg(
     video_path: str,
@@ -328,7 +308,7 @@ def extract_frames_ffmpeg(
     fps: float = FFMPEG_FPS,
     size: int = THUMB_SIZE,
     ffmpeg_path: str = "ffmpeg",
-) -> list[_FrameInfoDict]:
+) -> list[FrameInfo]:
     """Run the same ffmpeg pipeline as Plex.
 
     Command built per the binary's decompiled args:
@@ -337,9 +317,13 @@ def extract_frames_ffmpeg(
     ``ffmpeg_path`` can be a plain name (resolved via ``$PATH``) or an
     absolute path such as Plex's own ``Plex Transcoder`` binary.
 
-    Returns a list of dicts with keys ``index``, ``pts``, ``pts_time_ms``,
-    ``filename``, ``log_val``.
+    ``video_path`` is sanitised via :func:`_sanitise_video_path` before use:
+    null bytes are rejected and the path is resolved through symlinks.
+
+    Returns a list of :class:`FrameInfo`.
     """
+    safe_video_path = _sanitise_video_path(video_path)
+
     thumb_pattern = os.path.join(work_dir, "thumb-%05d.jpeg")
     log_path = os.path.join(work_dir, "ffmpeg.log")
 
@@ -347,7 +331,7 @@ def extract_frames_ffmpeg(
         ffmpeg_path,
         "-hide_banner",
         "-i",
-        video_path,
+        safe_video_path,
         "-vf",
         f"fps={fps},scale=w={size}:h={size}:force_original_aspect_ratio=increase,showinfo",
         "-vsync",
@@ -357,14 +341,14 @@ def extract_frames_ffmpeg(
         thumb_pattern,
     ]
 
-    print(f"[ffmpeg] {' '.join(cmd)}", file=sys.stderr)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    logger.debug("ffmpeg command: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     with open(log_path, "w") as f:
         _ = f.write(result.stderr)
 
     showinfo_re = re.compile(r"\[Parsed_showinfo.*\]\s+(.*)")
 
-    frames: list[_FrameInfoDict] = []
+    frames: list[FrameInfo] = []
     for line in result.stderr.split("\n"):
         m = showinfo_re.match(line)
         if not m:
@@ -385,23 +369,22 @@ def extract_frames_ffmpeg(
         thumb_file = os.path.join(work_dir, f"thumb-{idx + 1:05d}.jpeg")
 
         frames.append(
-            {
-                "index": idx + 1,
-                "pts": pts,
-                "pts_time_ms": round(pts_time * 1000),
-                "filename": thumb_file,
-                "log_val": float(fields.get("log", 0)),
-            }
+            FrameInfo(
+                index=idx + 1,
+                pts=pts,
+                pts_time_ms=round(pts_time * 1000),
+                filename=thumb_file,
+                log_val=float(fields.get("log", 0)),
+            )
         )
 
-    print(f"[ffmpeg] extracted {len(frames)} thumbnails", file=sys.stderr)
+    logger.info("extracted %d thumbnails", len(frames))
     return frames
 
 
 def process_thumbs_with_dnn(
-    frame_infos: list[_FrameInfoDict],
+    frame_infos: list[FrameInfo],
     model_path: str,
-    _work_dir: str,
 ) -> list[FrameFeatures]:
     """Run OpenCV DNN inference on each thumbnail.
 
@@ -411,15 +394,15 @@ def process_thumbs_with_dnn(
       3. Threshold score map at ``DNN_SCORE_THRESHOLD`` (0.999)
       4. Count positive cells, average coordinates, divide by 80.0
     """
-    import cv2
-    import numpy as np
+    import cv2  # type: ignore[import-not-found]  # noqa: PLC0415
+    import numpy as np  # type: ignore[import-not-found]  # noqa: PLC0415
 
     net = cv2.dnn.readNet(model_path)
     output_layer = "feature_fusion/Conv_7/Sigmoid"
 
     results: list[FrameFeatures] = []
     for frame_info in frame_infos:
-        img = cv2.imread(frame_info["filename"])
+        img = cv2.imread(frame_info.filename)
         if img is None:
             continue
 
@@ -440,7 +423,7 @@ def process_thumbs_with_dnn(
         output = net.forward(output_layer)  # shape: [1, C, H, W]
 
         score_map = output[0, 0, :, :]  # first channel — text score
-        h, w = cast(tuple[int, int], score_map.shape)
+        h, w = score_map.shape
 
         num_detections = 0
         sum_x = 0.0
@@ -462,10 +445,10 @@ def process_thumbs_with_dnn(
 
         results.append(
             FrameFeatures(
-                index=frame_info["index"],
-                pts=frame_info["pts"],
-                pts_time_ms=frame_info["pts_time_ms"],
-                log_val=frame_info.get("log_val", 0),
+                index=frame_info.index,
+                pts=frame_info.pts,
+                pts_time_ms=frame_info.pts_time_ms,
+                log_val=frame_info.log_val,
                 entropy=entropy,
                 histogram_peak_ratio=peak_ratio,
                 num_text_detections=num_detections,
@@ -491,8 +474,6 @@ class CreditDetector:
       4. Merging — join nearby segments using gap heuristics.
       5. Final acceptance — enforce minimum duration and score gates.
     """
-
-    frames: list[FrameFeatures]
 
     def __init__(self, frames: list[FrameFeatures]) -> None:
         self.frames = frames
@@ -637,19 +618,16 @@ class CreditDetector:
         if not self.frames:
             return []
 
-        print(f"[detect] analysing {len(self.frames)} frames", file=sys.stderr)
+        logger.info("analysing %d frames", len(self.frames))
 
         # Phase 1 — candidate filter
         candidates = [f for f in self.frames if self.is_credit_candidate(f)]
-        print(
-            f"[detect] {len(candidates)} credit-candidate frames", file=sys.stderr
-        )
+        logger.info("%d credit-candidate frames", len(candidates))
 
         # Phase 2 — continuous-run clustering
         runs = self.find_continuous_runs()
-        print(
-            f"[detect] {len(runs)} continuous runs (min {MIN_RUN_LENGTH} frames)",
-            file=sys.stderr,
+        logger.info(
+            "%d continuous runs (min %d frames)", len(runs), MIN_RUN_LENGTH
         )
 
         # Phase 3 — convert runs to scored segments
@@ -671,7 +649,7 @@ class CreditDetector:
 
         # Phase 4 — merge nearby segments
         segments = self.merge_segments(segments)
-        print(f"[detect] {len(segments)} after merging", file=sys.stderr)
+        logger.info("%d segments after merging", len(segments))
 
         # Phase 5 — final acceptance
         final: list[CreditSegment] = []
@@ -682,9 +660,7 @@ class CreditDetector:
                 if seg.score >= FALLBACK_MIN_SCORE:
                     final.append(seg)
 
-        print(
-            f"[detect] {len(final)} segments pass final filter", file=sys.stderr
-        )
+        logger.info("%d segments pass final filter", len(final))
         return final
 
 
@@ -747,15 +723,14 @@ def write_json(segments: list[CreditSegment], output_path: str) -> None:
     with open(output_path, "w") as f:
         json.dump(result, f, indent=2)
 
-    print(
-        f"[output] wrote {len(segments)} segments to {output_path}",
-        file=sys.stderr,
-    )
+    logger.info("wrote %d segments to %s", len(segments), output_path)
     for s in segments:
-        print(
-            f"  credit {s.start_pts_ms}-{s.end_pts_ms} ms "
-            + f"({s.duration_sec:.1f}s, score={s.score:.3f})",
-            file=sys.stderr,
+        logger.info(
+            "  credit %d-%d ms (%.1fs, score=%.3f)",
+            s.start_pts_ms,
+            s.end_pts_ms,
+            s.duration_sec,
+            s.score,
         )
 
 
@@ -780,13 +755,41 @@ def main() -> None:
         "--ffmpeg-path",
         help="Path to ffmpeg binary (auto-resolved if omitted)",
     )
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable DEBUG-level logging (ffmpeg commands, etc.)",
+    )
+    verbosity.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress progress output (warnings and errors only)",
+    )
     args = parser.parse_args()
 
-    csv_path: str | None = cast(str | None, args.csv)
-    video_path: str | None = cast(str | None, args.video)
-    model_path: str | None = cast(str | None, args.model)
-    output_path: str = cast(str, args.output) or "result.json"
-    ffmpeg_arg: str | None = cast(str | None, args.ffmpeg_path)
+    # Configure logging based on verbosity flags. Default is INFO to preserve
+    # the previous print-to-stderr behaviour. --quiet drops to WARNING,
+    # --verbose raises to DEBUG.
+    if args.quiet:
+        level = logging.WARNING
+    elif args.verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+    csv_path = args.csv
+    video_path = args.video
+    model_path = args.model
+    output_path = args.output or "result.json"
+    ffmpeg_arg = args.ffmpeg_path
 
     if csv_path:
         frames = read_csv(csv_path)
@@ -795,21 +798,21 @@ def main() -> None:
         write_json(segments, output_path)
     elif video_path:
         if not model_path:
-            print("error: --model required with --video", file=sys.stderr)
+            logger.error("--model required with --video")
             sys.exit(1)
         if not os.path.exists(model_path):
-            print(f"error: model not found: {model_path}", file=sys.stderr)
+            logger.error("model not found: %s", model_path)
             sys.exit(1)
 
         ffmpeg_bin = resolve_ffmpeg(ffmpeg_arg)
-        print(f"[ffmpeg] using {ffmpeg_bin}", file=sys.stderr)
+        logger.info("using ffmpeg: %s", ffmpeg_bin)
 
         with tempfile.TemporaryDirectory(prefix="plex_credit_") as work_dir:
-            print(f"[pipeline] work dir: {work_dir}", file=sys.stderr)
+            logger.debug("work dir: %s", work_dir)
             frame_infos = extract_frames_ffmpeg(
                 video_path, work_dir, ffmpeg_path=ffmpeg_bin
             )
-            frames = process_thumbs_with_dnn(frame_infos, model_path, work_dir)
+            frames = process_thumbs_with_dnn(frame_infos, model_path)
             detector = CreditDetector(frames)
             segments = detector.detect()
             write_json(segments, output_path)
