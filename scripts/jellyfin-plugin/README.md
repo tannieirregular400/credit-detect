@@ -60,12 +60,60 @@ CreditDetect.Plugin/bin/Release/net9.0/CreditDetect.Plugin.dll
   playback.  Segments with score ≥ `MinConfidence` are returned as
   `MediaSegmentType.Outro` (the "Skip Credits" button).
 
-## Model file
+## Model file (`model_v1.pb`)
 
-The plugin requires a TensorFlow model (`model_v1.pb`) compatible with
-the credit-detect DNN pipeline.  This model is identical to the one used
-by Plex Media Scanner's `sub_292050` and must output a score map via
-`feature_fusion/Conv_7/Sigmoid`.
+The plugin needs a TensorFlow frozen graph at `model_v1.pb` whose
+output layer is `feature_fusion/Conv_7/Sigmoid` (an 80×80 sigmoid
+score map — standard EAST text-detector architecture).
+
+**This file is not bundled with the plugin.** The weights originate in
+Plex Media Scanner's `sub_292050` and we do not have the right to
+redistribute them. You have three options:
+
+### Option A — Extract from Plex (recommended, ~30 min)
+
+1. Install Plex Media Server anywhere (it doesn't have to scan your
+   library). It runs on a VM, a throwaway container, a Raspberry Pi —
+   anything.
+2. Locate the `Plex Media Scanner` binary:
+   - **Linux**: `/usr/lib/plexmediaserver/Plex Media Scanner`
+   - **macOS**: `/Applications/Plex Media Server.app/Contents/MacOS/Plex Media Scanner`
+   - **Windows**: `C:\Program Files\Plex Media Server\Plex Media Scanner.exe`
+3. Extract the model:
+   ```bash
+   # Quick strings check (should print "feature_fusion/Conv_7/Sigmoid")
+   strings /usr/lib/plexmediaserver/Plex\ Media\ Scanner | grep feature_fusion
+
+   # Or use binwalk for a clean extract
+   sudo apt install binwalk
+   binwalk -e "/usr/lib/plexmediaserver/Plex Media Scanner"
+   find _Plex\ Media\ Scanner.extracted -name "model_v1.pb"
+   ```
+4. Copy the resulting `model_v1.pb` to the Jellyfin host
+   (e.g. `/var/lib/jellyfin/credit-detect/model_v1.pb`).
+5. Set **Model path** in the plugin configuration to that file.
+
+> The model only needs to be loaded at analysis time. Once your library
+> is processed, you can delete the binary if you want — keep the `.pb`.
+
+### Option B — Train a replacement
+
+The architecture is publicly documented (EAST: Efficient and Accurate
+Scene Text Detector, Zhou et al. 2017). Train it on
+[ICDAR-2015](https://rrc.cvc.uab.es/?ch=4&com=introduction) plus a
+custom credits dataset, freeze the graph, save with the layer name
+`feature_fusion/Conv_7/Sigmoid`. Drop the file at `ModelPath`.
+
+### Option C — CSV-only mode (no DNN)
+
+If you only need the detection heuristic against pre-extracted feature
+files, run `credit_detect.py --csv` directly. The plugin's
+`Scheduled Task` requires `--video` mode (and therefore the model), so
+this option bypasses the plugin entirely.
+
+> **Legal**: extracting the model from Plex is the user's
+> responsibility. The plugin author does not distribute the file and
+> makes no claim about its licensing.
 
 ## Configuration reference
 

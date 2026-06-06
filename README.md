@@ -18,22 +18,78 @@ calls **CreditMarker** entries.
 
 ### ffmpeg resolution
 
-`credit-detect` locates ffmpeg automatically:
+`credit-detect` does **not** ship, download, or vendor ffmpeg. It will
+use whichever ffmpeg it finds in this order:
 
 1. **Explicit `--ffmpeg-path`** argument
 2. **`$PATH`** via `shutil.which("ffmpeg")`
 3. **Plex bundled** — `/usr/lib/plexmediaserver/Plex Transcoder`
-4. **Auto-download** — a static GPL build from
-   [johnvansickle.com](https://johnvansickle.com/ffmpeg/) cached at
-   `~/.cache/credit-detect/ffmpeg/ffmpeg`
+
+If none of these resolve, the tool prints an actionable error and exits.
+Install ffmpeg via your system package manager
+(`apt install ffmpeg`, `dnf install ffmpeg`, `brew install ffmpeg`,
+`winget install ffmpeg`) or pass `--ffmpeg-path` to point at an
+existing binary.
+
+### The `model_v1.pb` file
+
+The DNN model is **not** distributed with this project. The network
+weights are derived from Plex Media Scanner's `sub_292050` binary and
+their licensing is unclear; redistributing the file would be a
+potential IP issue. The architecture is a standard EAST-style text
+detector (`feature_fusion/Conv_7/Sigmoid` output, 80×80 score map,
+sigmoid activations), so a model trained on the same task is a drop-in
+replacement.
+
+You have three options:
+
+| Option | Effort | Notes |
+|--------|--------|-------|
+| **Extract from Plex** (recommended) | ~30 min | Run Plex Media Scanner once, locate the embedded `.pb` (see below). |
+| **Train a replacement** | hours | Train EAST or CRAFT on the ICDAR-2015 + a custom credits dataset. |
+| **Use `--csv` mode only** | none | Skip DNN detection entirely; feed pre-extracted features. |
+
+#### Extracting the model from Plex
+
+1. Install [Plex Media Server](https://www.plex.tv/media-server-downloads/)
+   on any machine (it does not need to scan your library).
+2. Locate `Plex Transcoder` or `Plex Media Scanner`:
+   - **Linux**: `/usr/lib/plexmediaserver/`
+   - **macOS**: `/Applications/Plex Media Server.app/Contents/MacOS/`
+   - **Windows**: `C:\Program Files\Plex Media Server\`
+3. Extract `model_v1.pb` from the binary:
+   ```bash
+   # (a) Sanity check — confirms the model layer is embedded.
+   #     Output of "1" (or any positive number) means the model is in
+   #     there; "0" means you have the wrong binary.
+   strings "/usr/lib/plexmediaserver/Plex Media Scanner" \
+     | grep -c "feature_fusion/Conv_7/Sigmoid"
+
+   # (b) Actual extraction — produces a directory of embedded files
+   #     including model_v1.pb (typically the largest). Without -e
+   #     binwalk just lists what's there.
+   binwalk -e "/usr/lib/plexmediaserver/Plex Media Scanner"
+   # Look for the extracted file, e.g.:
+   #   ./_Plex Media Scanner.extracted/model_v1.pb   (binwalk default)
+   # or use binwalk's -D flag to extract a single filetype:
+   binwalk -e -D 'protobuf.*model' "/usr/lib/plexmediaserver/Plex Media Scanner"
+   ```
+4. Point the plugin or CLI at the extracted file via `--model` /
+   `ModelPath` setting.
+
+> **Legal note**: This extraction step is the user's responsibility.
+> We don't distribute the model and we don't assert any rights over it.
+> If you can't or won't extract it, use the `--csv` workflow — the
+> detection heuristic works identically on the 9-column feature format
+> without any model.
 
 ## Usage
 
 ```bash
-# Analyse from pre-extracted CSV (9-column format)
+# Analyse from pre-extracted CSV (9-column format, no ffmpeg/model needed)
 python credit_detect.py --csv thumbnail_data.csv --output result.json
 
-# Analyse from video directly (requires opencv-python + model)
+# Analyse from video directly (requires opencv-python + model + ffmpeg)
 python credit_detect.py --video input.mp4 --model model_v1.pb
 
 # Explicit ffmpeg path
